@@ -1,9 +1,22 @@
-import type { H3Event } from 'h3'
+import type { H3Event, EventHandler } from 'h3'
 import { eventHandler, createError, getQuery, getRequestURL, sendRedirect } from 'h3'
 import { withQuery, parsePath } from 'ufo'
 import { defu } from 'defu'
 import { useRuntimeConfig } from '#imports'
-import type { OAuthConfig } from '#auth-utils'
+import type { OAuthAccessTokenError, OAuthAccessTokenSuccess, OAuthConfig, OAuthToken, OAuthUser } from '#auth-utils'
+
+/**
+ * Twitch User
+ *
+ * @see https://dev.twitch.tv/docs/api/reference/#get-users
+ */
+type TwitchUser = {
+  id: string
+  login: string
+  display_name: string
+  profile_image_url: string
+  email?: string
+}
 
 export interface OAuthTwitchConfig {
   /**
@@ -50,14 +63,9 @@ export interface OAuthTwitchConfig {
    * @example { force_verify: 'true' }
    */
   authorizationParams?: Record<string, string>
-  /**
-   * Redirect URL to to allow overriding for situations like prod failing to determine public hostname
-   * @default process.env.NUXT_OAUTH_TWITCH_REDIRECT_URL or current URL
-   */
-  redirectURL?: string
 }
 
-export function oauthTwitchEventHandler({ config, onSuccess, onError }: OAuthConfig<OAuthTwitchConfig>) {
+export function oauthTwitchEventHandler({ config, onSuccess, onError }: OAuthConfig<OAuthTwitchConfig, TwitchUser>): EventHandler {
   return eventHandler(async (event: H3Event) => {
     config = defu(config, useRuntimeConfig(event).oauth?.twitch, {
       authorizationURL: 'https://id.twitch.tv/oauth2/authorize',
@@ -75,7 +83,7 @@ export function oauthTwitchEventHandler({ config, onSuccess, onError }: OAuthCon
       return onError(event, error)
     }
 
-    const redirectURL = config.redirectURL || getRequestURL(event).href
+    const redirectUrl = getRequestURL(event).href
     if (!code) {
       config.scope = config.scope || []
       if (config.emailRequired && !config.scope.includes('user:read:email')) {
@@ -87,16 +95,14 @@ export function oauthTwitchEventHandler({ config, onSuccess, onError }: OAuthCon
         withQuery(config.authorizationURL as string, {
           response_type: 'code',
           client_id: config.clientId,
-          redirect_uri: redirectURL,
+          redirect_uri: redirectUrl,
           scope: config.scope.join(' '),
           ...config.authorizationParams,
         }),
       )
     }
 
-    // TODO: improve typing
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tokens: any = await $fetch(
+    const tokens: any = await $fetch<unknown>(
       config.tokenURL as string,
       {
         method: 'POST',
@@ -105,7 +111,7 @@ export function oauthTwitchEventHandler({ config, onSuccess, onError }: OAuthCon
         },
         params: {
           grant_type: 'authorization_code',
-          redirect_uri: parsePath(redirectURL).pathname,
+          redirect_uri: parsePath(redirectUrl).pathname,
           client_id: config.clientId,
           client_secret: config.clientSecret,
           code,
@@ -114,20 +120,19 @@ export function oauthTwitchEventHandler({ config, onSuccess, onError }: OAuthCon
     ).catch((error) => {
       return { error }
     })
-    if (tokens.error) {
+    if ((tokens as OAuthAccessTokenError).error) {
       const error = createError({
         statusCode: 401,
-        message: `Twitch login failed: ${tokens.error?.data?.error_description || 'Unknown error'}`,
-        data: tokens,
+        message: `Twitch login failed: ${(tokens as OAuthAccessTokenError).error || 'Unknown error'}`,
+        data: tokens as OAuthAccessTokenError,
       })
       if (!onError) throw error
       return onError(event, error)
     }
 
-    const accessToken = tokens.access_token
-    // TODO: improve typing
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const users: any = await $fetch('https://api.twitch.tv/helix/users', {
+    const accessToken = (tokens as OAuthAccessTokenSuccess).access_token
+
+    const users = await $fetch<{ data: TwitchUser[] }>('https://api.twitch.tv/helix/users', {
       headers: {
         'Client-ID': config.clientId,
         'Authorization': `Bearer ${accessToken}`,
@@ -147,8 +152,36 @@ export function oauthTwitchEventHandler({ config, onSuccess, onError }: OAuthCon
     }
 
     return onSuccess(event, {
-      tokens,
-      user,
+      user: normalizeTwitchUser(user),
+      tokens: normalizeTwitchTokens(tokens),
     })
   })
+}
+
+function normalizeTwitchUser(user: TwitchUser): OAuthUser<TwitchUser> {
+  return {
+    id: user.id,
+    nickname: user.login,
+    name: user.display_name,
+    email: user.email,
+    avatar: user.profile_image_url,
+    raw: user,
+  }
+}
+
+function normalizeTwitchTokens(tokens: TwitchAccessTokenSucces): OAuthToken {
+  return {
+    token: tokens.access_token,
+    refreshToken: tokens.refresh_token,
+    expiresIn: tokens.expires_in,
+    approvedScopes: tokens.scope || [],
+  }
+}
+ 
+/**
+  * Authorization Tokens
+  * @see https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#use-the-authorization-code-to-get-a-token
+  */
+interface TwitchAccessTokenSucces extends Omit<OAuthAccessTokenSuccess, 'scope'> {
+  scope?: string[]
 }

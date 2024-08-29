@@ -5,7 +5,7 @@ export default oauthTwitchEventHandler({
   async onSuccess(event, { user }) {
     await setUserSession(event, {
       user: {
-        twitch: user.login,
+        twitch: user.nickname,
       },
       loggedInAt: Date.now(),
     })
