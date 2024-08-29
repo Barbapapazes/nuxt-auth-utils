@@ -44,7 +44,7 @@ export interface OAuthSteamConfig {
   redirectURL?: string
 }
 
-export function oauthSteamEventHandler({ config, onSuccess, onError }: OAuthConfig<OAuthSteamConfig>): EventHandler {
+export function oauthSteamEventHandler({ config, onSuccess, onError }: OAuthConfig<OAuthSteamConfig, SteamUser>): EventHandler {
   return eventHandler(async (event: H3Event) => {
     config = defu(config, useRuntimeConfig(event).oauth?.steam, {
       authorizationURL: 'https://steamcommunity.com/openid/login',
